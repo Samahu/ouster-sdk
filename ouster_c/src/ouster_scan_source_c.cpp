@@ -6,21 +6,26 @@
 #include <thread>
 #include <vector>
 
-#include "ouster/cartesian.h"           // cartesian, XYZLut, make_xyz_lut
+#include "ouster/cartesian.h"           // cartesianT
+#include "ouster/lidar_scan.h"          // LidarScan, img_t, destagger
 #include "ouster/sensor_scan_source.h"  // SensorScanSource
-#include "ouster/types.h"               // sensor_info
+#include "ouster/types.h"               // SensorInfo
+#include "ouster/xyzlut.h"              // XYZLut, make_xyz_lut, cartesian
 #include "ouster_c.h"
 
+namespace sensor = ouster::sdk::sensor;
+namespace core = ouster::sdk::core;
+
 struct ouster_scan_source {
-    std::unique_ptr<ouster::sensor::SensorScanSource> source;
+    std::unique_ptr<sensor::SensorScanSource> source;
 };
 
 struct ouster_lidar_scan {
-    std::unique_ptr<ouster::LidarScan> ls;
+    std::unique_ptr<core::LidarScan> ls;
 };
 
 struct ouster_xyz_lut {
-    std::unique_ptr<ouster::XYZLut> lut;
+    std::unique_ptr<core::XYZLut> lut;
 };
 
 extern "C" {
@@ -31,13 +36,9 @@ int ouster_scan_source_create(const char* hostname,
                               ouster_scan_source_t** out_source) {
     if (!hostname || !out_source) return -1;
     try {
-        std::vector<ouster::sensor::Sensor> sensors;
-        ouster::sensor::sensor_config cfg;  // default
-        cfg.udp_dest = "@auto";             // auto-detect
-        sensors.emplace_back(std::string(hostname), cfg);
         auto src_ptr = std::make_unique<ouster_scan_source>();
         src_ptr->source =
-            std::make_unique<ouster::sensor::SensorScanSource>(sensors);
+            std::make_unique<sensor::SensorScanSource>(std::string(hostname));
         *out_source = src_ptr.release();
         return 0;
     } catch (...) {
@@ -146,12 +147,16 @@ int ouster_lidar_scan_complete(const ouster_lidar_scan_t* scan) {
         return -1;
     }
 }
+
+int ouster_lidar_scan_get_field_u32(const ouster_lidar_scan_t* scan,
+                                    const char* field_name, int destagger,
+                                    uint32_t* out_buf, size_t capacity,
                                     size_t* out_count) {
     if (!scan || !scan->ls || !field_name || !out_buf) return -3;
     if (!scan->ls->has_field(field_name)) return -1;
-    Eigen::Ref<ouster::img_t<uint32_t>> img = scan->ls->field<uint32_t>(field_name);
-    if (destagger) {
-        img = ouster::destagger<uint32_t>(
+    core::img_t<uint32_t> img = scan->ls->field<uint32_t>(field_name);
+    if (destagger && scan->ls->sensor_info) {
+        img = core::destagger<uint32_t>(
             img, scan->ls->sensor_info->format.pixel_shift_by_row, false);
     }
     size_t n = (size_t)img.size();
@@ -167,9 +172,9 @@ int ouster_lidar_scan_get_field_u16(const ouster_lidar_scan_t* scan,
                                     size_t* out_count) {
     if (!scan || !scan->ls || !field_name || !out_buf) return -3;
     if (!scan->ls->has_field(field_name)) return -1;
-    Eigen::Ref<ouster::img_t<uint16_t>> img = scan->ls->field<uint16_t>(field_name);
-    if (destagger) {
-        img = ouster::destagger<uint16_t>(
+    core::img_t<uint16_t> img = scan->ls->field<uint16_t>(field_name);
+    if (destagger && scan->ls->sensor_info) {
+        img = core::destagger<uint16_t>(
             img, scan->ls->sensor_info->format.pixel_shift_by_row, false);
     }
     size_t n = (size_t)img.size();
@@ -185,9 +190,9 @@ int ouster_lidar_scan_get_field_u8(const ouster_lidar_scan_t* scan,
                                    size_t* out_count) {
     if (!scan || !scan->ls || !field_name || !out_buf) return -3;
     if (!scan->ls->has_field(field_name)) return -1;
-    Eigen::Ref<ouster::img_t<uint8_t>> img = scan->ls->field<uint8_t>(field_name);
-    if (destagger) {
-        img = ouster::destagger<uint8_t>(
+    core::img_t<uint8_t> img = scan->ls->field<uint8_t>(field_name);
+    if (destagger && scan->ls->sensor_info) {
+        img = core::destagger<uint8_t>(
             img, scan->ls->sensor_info->format.pixel_shift_by_row, false);
     }
     size_t n = (size_t)img.size();
@@ -203,7 +208,7 @@ int ouster_lidar_scan_get_xyz(const ouster_lidar_scan_t* scan,
                               int filter_invalid) {
     if (!xyz_lut || !xyz_lut->lut || !scan || !scan->ls || !xyz_out) return -3;
 
-    auto cloud = ouster::cartesian(*scan->ls, *xyz_lut->lut);
+    auto cloud = core::cartesian(*scan->ls, *xyz_lut->lut);
     size_t total = (size_t)cloud.rows();
     size_t written = 0;
     if (!filter_invalid && capacity_points < total) return -2;
@@ -231,10 +236,10 @@ ouster_xyz_lut_t* ouster_scan_source_create_xyz_lut(
 
     try {
         auto si = source->source->sensor_info()[0];
-        auto lut_val = ouster::make_xyz_lut(*si, use_extrinsics != 0);
+        auto lut_val = core::make_xyz_lut(*si, use_extrinsics != 0);
         ouster_xyz_lut_t* handle = new (std::nothrow) ouster_xyz_lut();
         if (!handle) return nullptr;
-        handle->lut = std::make_unique<ouster::XYZLut>(std::move(lut_val));
+        handle->lut = std::make_unique<core::XYZLut>(std::move(lut_val));
         return handle;
     } catch (...) {
         return nullptr;
@@ -249,3 +254,4 @@ void ouster_xyz_lut_destroy(ouster_xyz_lut_t* lut) {
 }
 
 }  // extern "C"
+
